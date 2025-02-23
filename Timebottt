@@ -1,0 +1,291 @@
+
+import logging
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters.command import Command
+from aiogram import F
+import asyncio
+from persiantools.jdatetime import JalaliDateTime
+import datetime
+import json
+import os
+
+logging.basicConfig(level=logging.INFO)
+
+TOKEN = "7766072610:AAGiW8ydqrdAUo-mO7ZwbltY2tom1lUVb_A"
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+def load_data():
+    try:
+        if os.path.exists('work_data.json'):
+            with open('work_data.json', 'r') as f:
+                data = json.load(f)
+                return data.get('work_records', {}), data.get('user_states', {})
+        return {}, {}
+    except:
+        return {}, {}
+
+def save_data():
+    with open('work_data.json', 'w') as f:
+        json.dump({'work_records': work_records, 'user_states': user_states}, f)
+
+work_records, user_states = load_data()
+admin_users = ["mojtabaa1885", "Barghshopsmart"]
+
+main_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="ثبت ساعت کاری")],
+        [KeyboardButton(text="گزارش کار")],
+        [KeyboardButton(text="بازگشت به منو اصلی")]
+    ],
+    resize_keyboard=True
+)
+
+report_type_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="گزارش ریز کارکرد")],
+        [KeyboardButton(text="گزارش مجموع کارکرد")],
+        [KeyboardButton(text="بازگشت به منو اصلی")]
+    ],
+    resize_keyboard=True
+)
+
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    user_states[str(message.from_user.id)] = None
+    await message.answer("به ربات ثبت ساعت کاری خوش آمدید!", reply_markup=main_kb)
+
+@dp.message(F.text == "بازگشت به منو اصلی")
+async def return_to_main(message: types.Message):
+    user_id = str(message.from_user.id)
+    user_states[user_id] = None
+    await message.answer("به منوی اصلی بازگشتید", reply_markup=main_kb)
+
+@dp.message(F.text == "ثبت ساعت کاری")
+async def record_hours(message: types.Message):
+    user_id = str(message.from_user.id)
+    user_states[user_id] = "waiting_for_hours"
+    await message.answer("لطفا ساعت کار را به صورت 2:30 وارد کنید:")
+
+def calculate_total_hours(records):
+    total = 0
+    for record in records:
+        hours, minutes = map(int, record['hours'].split(':'))
+        total += hours + minutes/60
+    return round(total, 2)
+
+async def send_monthly_report():
+    now = JalaliDateTime.now()
+    report = "گزارش ماهانه ساعات کار:\n\n"
+
+    for uid in work_records:
+        try:
+            user = await bot.get_chat(int(uid))
+            username = user.username or "بدون نام کاربری"
+            total_hours = 0
+            for record in work_records[uid]:
+                hours, minutes = map(int, record['hours'].split(':'))
+                total_hours += hours + minutes/60
+            report += f"{username}: {round(total_hours, 2)} ساعت\n"
+        except:
+            continue
+
+    for admin in admin_users:
+        try:
+            admin_chat = await bot.get_chat(username=admin)
+            await bot.send_message(admin_chat.id, report)
+        except:
+            continue
+
+@dp.message(F.text == "گزارش کار")
+async def show_report_options(message: types.Message):
+    user_id = str(message.from_user.id)
+    user_states[user_id] = "choosing_report_type"
+    await message.answer("لطفا نوع گزارش را انتخاب کنید:", reply_markup=report_type_kb)
+
+@dp.message(F.text == "گزارش ریز کارکرد")
+async def show_detailed_report_users(message: types.Message):
+    current_user = message.from_user
+    is_admin = current_user.username in admin_users
+    keyboard = []
+
+    if is_admin:
+        for uid in work_records.keys():
+            try:
+                user = await bot.get_chat(int(uid))
+                username = user.username or "بدون نام کاربری"
+                keyboard.append([KeyboardButton(text=username)])
+            except:
+                continue
+    else:
+        if str(current_user.id) in work_records:
+            keyboard.append([KeyboardButton(text=current_user.username or "گزارش من")])
+        else:
+            await message.answer("شما هنوز اطلاعاتی ثبت نکرده‌اید.", reply_markup=main_kb)
+            return
+
+    keyboard.append([KeyboardButton(text="بازگشت به منو اصلی")])
+    user_kb = ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+    user_states[str(message.from_user.id)] = "waiting_for_username_detailed"
+    await message.answer("لطفا کاربر مورد نظر را انتخاب کنید:", reply_markup=user_kb)
+
+@dp.message(F.text == "گزارش مجموع کارکرد")
+async def show_summary_report_users(message: types.Message):
+    user_id = str(message.from_user.id)
+    is_admin = message.from_user.username in admin_users
+    
+    if is_admin:
+        keyboard = []
+        for uid in work_records.keys():
+            try:
+                user = await bot.get_chat(int(uid))
+                username = user.username or "بدون نام کاربری"
+                keyboard.append([KeyboardButton(text=username)])
+            except:
+                continue
+        keyboard.append([KeyboardButton(text="بازگشت به منو اصلی")])
+        user_kb = ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+        user_states[user_id] = "waiting_for_username_summary"
+        await message.answer("لطفا کاربر مورد نظر را انتخاب کنید:", reply_markup=user_kb)
+    else:
+        if user_id in work_records:
+            user_states[user_id] = f"waiting_for_start_date_{user_id}"
+            await message.answer("لطفا تاریخ شروع را وارد کنید (مثال: 1403/01/15):")
+        else:
+            await message.answer("شما هنوز اطلاعاتی ثبت نکرده‌اید.", reply_markup=main_kb)
+
+@dp.message()
+async def handle_messages(message: types.Message):
+    user_id = str(message.from_user.id)
+    state = user_states.get(user_id)
+
+    if message.text == "بازگشت به منو اصلی":
+        user_states[user_id] = None
+        await message.answer("به منوی اصلی بازگشتید", reply_markup=main_kb)
+        return
+
+    if state == "waiting_for_hours":
+        if ":" in message.text:
+            user_states[user_id] = "waiting_for_address"
+            user_states[f"{user_id}_hours"] = message.text
+            await message.answer("لطفا آدرس محل کار را وارد کنید:")
+        else:
+            await message.answer("لطفا ساعت را در فرمت صحیح وارد کنید (مثال: 2:30)")
+
+    elif state == "waiting_for_address":
+        user_states[user_id] = "waiting_for_date"
+        user_states[f"{user_id}_address"] = message.text
+        await message.answer("لطفا تاریخ را به صورت 1403/01/15 وارد کنید:")
+
+    elif state == "waiting_for_date":
+        if "/" in message.text and len(message.text.split("/")) == 3:
+            if user_id not in work_records:
+                work_records[user_id] = []
+
+            work_records[user_id].append({
+                "date": message.text,
+                "hours": user_states[f"{user_id}_hours"],
+                "address": user_states[f"{user_id}_address"]
+            })
+
+            user_states[user_id] = None
+            user_states.pop(f"{user_id}_hours", None)
+            user_states.pop(f"{user_id}_address", None)
+            save_data()
+
+            await message.answer("اطلاعات کاری شما ثبت شد", reply_markup=main_kb)
+        else:
+            await message.answer("لطفا تاریخ را در فرمت صحیح وارد کنید (مثال: 1403/01/15)")
+
+    elif state == "waiting_for_username_detailed":
+        search_username = message.text
+        found = False
+        for uid, records in work_records.items():
+            try:
+                user = await bot.get_chat(int(uid))
+                if user.username == search_username:
+                    report = "گزارش ریز کارکرد:\n\n"
+                    for record in records:
+                        report += f"تاریخ: {record['date']}\n"
+                        report += f"ساعت کاری: {record['hours']}\n"
+                        report += f"آدرس: {record['address']}\n"
+                        report += "-------------------\n"
+                    await message.answer(report, reply_markup=main_kb)
+                    found = True
+                    break
+            except:
+                continue
+
+        if not found and message.text != "بازگشت به منو اصلی":
+            await message.answer("کاربر مورد نظر یافت نشد", reply_markup=main_kb)
+
+        user_states[user_id] = None
+
+    elif state == "waiting_for_username_summary":
+        search_username = message.text
+        found = False
+        for uid, records in work_records.items():
+            try:
+                user = await bot.get_chat(int(uid))
+                if user.username == search_username:
+                    user_states[user_id] = f"waiting_for_start_date_{uid}"
+                    await message.answer("لطفا تاریخ شروع را وارد کنید (مثال: 1403/01/15):")
+                    found = True
+                    break
+            except:
+                continue
+
+        if not found and message.text != "بازگشت به منو اصلی":
+            await message.answer("کاربر مورد نظر یافت نشد", reply_markup=main_kb)
+            user_states[user_id] = None
+
+    elif state and state.startswith("waiting_for_start_date_"):
+        target_uid = state.split("_")[-1]
+        if "/" in message.text and len(message.text.split("/")) == 3:
+            user_states[f"{user_id}_start_date"] = message.text
+            user_states[user_id] = f"waiting_for_end_date_{target_uid}"
+            await message.answer("لطفا تاریخ پایان را وارد کنید (مثال: 1403/01/20):")
+        else:
+            await message.answer("لطفا تاریخ را در فرمت صحیح وارد کنید (مثال: 1403/01/15)")
+
+    elif state and state.startswith("waiting_for_end_date_"):
+        target_uid = state.split("_")[-1]
+        if "/" in message.text and len(message.text.split("/")) == 3:
+            start_date = user_states[f"{user_id}_start_date"]
+            end_date = message.text
+            
+            if target_uid in work_records:
+                total_minutes = 0
+                for record in work_records[target_uid]:
+                    if start_date <= record['date'] <= end_date:
+                        hours, minutes = map(int, record['hours'].split(':'))
+                        total_minutes += (hours * 60) + minutes
+                
+                total_hours = total_minutes / 60
+                report = f"گزارش مجموع کارکرد از {start_date} تا {end_date}:\n"
+                report += f"مجموع ساعات: {int(total_hours)}:{int((total_hours % 1) * 60):02d}"
+                await message.answer(report, reply_markup=main_kb)
+            else:
+                await message.answer("اطلاعاتی برای این کاربر یافت نشد", reply_markup=main_kb)
+
+            user_states[user_id] = None
+            user_states.pop(f"{user_id}_start_date", None)
+        else:
+            await message.answer("لطفا تاریخ را در فرمت صحیح وارد کنید (مثال: 1403/01/15)")
+
+async def check_and_send_monthly_report():
+    while True:
+        now = JalaliDateTime.now()
+        if now.day == 1 and now.hour == 9:  # ارسال در روز اول هر ماه ساعت 9 صبح
+            await send_monthly_report()
+        await asyncio.sleep(3600)  # چک کردن هر ساعت
+
+async def main():
+    print("Bot starting...")
+    asyncio.create_task(check_and_send_monthly_report())
+    await dp.start_polling(bot)
+    print("Bot is running!")
+
+if __name__ == "__main__":
+    asyncio.run(main())
